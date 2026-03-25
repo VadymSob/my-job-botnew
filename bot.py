@@ -2,7 +2,6 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import urllib.parse
-import json
 
 # --- 1. ВАШІ КРИТЕРІЇ ДЛЯ ШІ ---
 AI_CRITERIA = """
@@ -29,7 +28,8 @@ def get_ai_analysis(candidate_data):
     if not api_key: 
         return "⚠️ Помилка: GEMINI_API_KEY не знайдено в Secrets GitHub."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # Використовуємо стабільну версію v1 та модель gemini-1.5-flash
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
     
     prompt = f"{AI_CRITERIA}\n\nСписок кандидатів для аналізу:\n{candidate_data}"
     
@@ -47,12 +47,17 @@ def get_ai_analysis(candidate_data):
         r = requests.post(url, json=payload, timeout=30)
         res = r.json()
         
+        # Обробка відповіді
         if 'candidates' in res and len(res['candidates']) > 0:
-            return res['candidates'][0]['content']['parts'][0]['text']
+            content = res['candidates'][0].get('content')
+            if content and 'parts' in content:
+                return content['parts'][0]['text']
+            else:
+                return "⚠️ ШІ повернув порожню відповідь (кандидати відфільтровані або помилка вмісту)."
         elif 'error' in res:
             return f"❌ Помилка Google API: {res['error'].get('message', 'Unknown error')}"
         else:
-            return "⚠️ ШІ повернув порожню відповідь. Можливо, список кандидатів був занадто малим."
+            return f"⚠️ Неочікувана відповідь від ШІ. Перевірте структуру: {str(res)[:200]}"
     except Exception as e:
         return f"❌ Технічна помилка зв'язку з ШІ: {str(e)}"
 
@@ -75,18 +80,17 @@ def get_work_ua_data():
             return None
 
         candidates_text = ""
-        for card in cards[:12]: # Беремо 12 останніх для аналізу
+        for card in cards[:12]: 
             link_tag = card.find('a', href=True)
             info_tag = card.find('p', class_='text-muted')
             if link_tag:
                 name = link_tag.get_text(strip=True)
-                info = info_tag.get_text(strip=True) if info_tag else "Досвід не вказано стисло"
+                info = info_tag.get_text(strip=True) if info_tag else "Досвід не вказано"
                 link = "https://www.work.ua" + link_tag['href']
                 candidates_text += f"КАНДИДАТ: {name}\nІНФО: {info}\nПОСИЛАННЯ: {link}\n\n"
         
         return candidates_text
     except Exception as e:
-        print(f"Помилка парсингу: {e}")
         return None
 
 # --- 4. НАДІСЛАННЯ В TELEGRAM ---
@@ -97,7 +101,6 @@ def send_telegram(message):
     
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     
-    # Якщо повідомлення занадто довге, Telegram його не прийме (ліміт 4096 символів)
     if len(message) > 4000:
         message = message[:4000] + "..."
         
@@ -111,13 +114,10 @@ def send_telegram(message):
 
 # --- 5. ГОЛОВНИЙ ЗАПУСК ---
 if __name__ == "__main__":
-    print("Початок збору даних...")
     raw_data = get_work_ua_data()
     
     if raw_data:
-        print("Дані зібрано, відправляю на аналіз ШІ...")
         final_report = get_ai_analysis(raw_data)
         send_telegram(f"🤖 **Звіт ШІ-рекрутера (Хлібозавод):**\n\n{final_report}")
     else:
         send_telegram("📭 Сьогодні на Work.ua нових кандидатів не знайдено.")
-    print("Роботу завершено.")
