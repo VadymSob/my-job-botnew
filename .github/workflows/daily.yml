@@ -19,6 +19,7 @@ jobs:
       - name: Run bot
         env:
           WORK_UA_COOKIE: ${{ secrets.WORK_UA_COOKIE }}
+          ROBOTA_UA_COOKIE: ${{ secrets.ROBOTA_UA_COOKIE }} # Додати цей рядок
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot.py
