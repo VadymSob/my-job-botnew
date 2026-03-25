@@ -4,19 +4,21 @@ import os
 import urllib.parse
 import time
 
-# --- 1. КРИТЕРІЇ ВІДБОРУ ДЛЯ ШІ ---
+# --- 1. КРИТЕРІЇ ВІДБОРУ (ОНОВЛЕНО: БІЛЬШ ГНУЧКІ) ---
 AI_CRITERIA = """
-Ти - професійний рекрутер хлібозаводу (Вінницька обл.). Шукаємо Керівника продажу або Комерційного директора.
-Специфіка: FMCG (хліб, продукти харчування). 
+Ти - досвідчений HR-директор. Шукаємо Керівника продажу / Комерційного директора для хлібозаводу (Вінниця).
+Сфера: FMCG (товари повсякденного попиту).
 
-ЗАВДАННЯ: 
-1. Проаналізуй список резюме. 
-2. Відсій тих, хто НЕ працював з продуктами харчування (FMCG Food) або НЕ має досвіду управління командою.
-3. ВІДПОВІДАЙ СУВОРО за шаблоном для кожного підходящого:
-✅ [ПІБ/Посада] - [Коротко: чому підходить] - [Посилання]
+ТВОЄ ЗАВДАННЯ:
+1. Проаналізуй список резюме.
+2. ПРІОРИТЕТ: Кандидати з досвідом у продуктах харчування (хліб, молоко, м'ясо, кондитерка).
+3. ТАКОЖ РОЗГЛЯДАЙ: Сильних управлінців з будь-якого FMCG (напої, побутова хімія, косметика) або системного ритейлу.
+4. ОБОВ'ЯЗКОВО: Досвід керування відділом продажів або філією.
 
-Якщо підходящих немає, напиши: "Нових релевантних кандидатів за 15 днів не знайдено."
-Не пиши вступних фраз. Тільки список.
+ФОРМАТ ВІДПОВІДІ (Тільки список):
+✅ [ПІБ/Посада] - [Чому підходить (наприклад: досвід у молочній сфері 5 років)] - [Посилання]
+
+Якщо зовсім немає релевантних (наприклад, тільки ІТ або будівництво), напиши: "Нових релевантних кандидатів не знайдено."
 """
 
 DB_FILE = "processed_resumes.txt"
@@ -38,7 +40,6 @@ def get_ai_analysis(candidate_data):
     if not api_key: return "⚠️ Помилка: Немає API ключа."
     
     try:
-        # Автопідбір доступної моделі
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
         list_res = requests.get(list_url, timeout=30).json()
         target_model = next((m['name'] for m in list_res.get('models', []) if 'generateContent' in m['supportedGenerationMethods']), None)
@@ -48,7 +49,7 @@ def get_ai_analysis(candidate_data):
         url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
         payload = {
             "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидати для аналізу:\n{candidate_data}"}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2000}
+            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2000}
         }
         r = requests.post(url, json=payload, timeout=60)
         res = r.json()
@@ -57,7 +58,6 @@ def get_ai_analysis(candidate_data):
         return f"❌ Помилка зв'язку з ШІ: {str(e)}"
 
 def get_work_ua_resumes():
-    # Розширений список запитів
     queries = [
         "комерційний директор", 
         "керівник відділу продажу", 
@@ -77,7 +77,6 @@ def get_work_ua_resumes():
     
     for q in queries:
         encoded_q = urllib.parse.quote(q)
-        # ?days=122 — фільтр на Work.ua "за останні 14-15 днів"
         url = f"https://www.work.ua/resumes-vinnytsya-{encoded_q}/?days=122"
         
         try:
@@ -88,16 +87,14 @@ def get_work_ua_resumes():
             for card in cards:
                 link_tag = card.find('a', href=True)
                 if link_tag:
-                    # Очищуємо посилання від зайвих параметрів
                     link = "https://www.work.ua" + link_tag['href'].split('?')[0]
-                    
                     if link not in processed:
                         name = link_tag.get_text(strip=True)
                         info = card.find('p', class_='text-muted')
                         combined_data += f"КАНДИДАТ: {name}\nІНФО: {info.get_text(strip=True) if info else ''}\nПОСИЛАННЯ: {link}\n\n"
                         new_links.append(link)
-                        processed.add(link) # Щоб не дублювати в межах одного запуску
-            time.sleep(1) # Невелика пауза між запитами
+                        processed.add(link)
+            time.sleep(1)
         except:
             continue
             
@@ -107,30 +104,19 @@ def send_telegram(message):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("CHAT_ID")
     if not token or not chat_id: return
-    
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id, 
-        "text": message[:4000], 
-        "disable_web_page_preview": True
-    }
-    requests.post(url, data=payload)
+    requests.post(url, data={"chat_id": chat_id, "text": message[:4000], "disable_web_page_preview": True})
 
 if __name__ == "__main__":
-    print("Збираю нові резюме...")
     raw_data, links_to_save = get_work_ua_resumes()
     
     if raw_data:
-        print(f"Знайдено нових: {len(links_to_save)}. Аналізую...")
         report = get_ai_analysis(raw_data)
         
-        # Відправляємо в ТГ тільки якщо ШІ когось обрав
-        if "не знайдено" not in report.lower():
-            send_telegram(f"🤖 **Звіт ШІ-рекрутера (Нові за 15 днів):**\n\n{report}")
-        else:
-            print("ШІ відсіяв усіх кандидатів як нерелевантних.")
-            
-        # Зберігаємо ВСІ побачені посилання, щоб завтра їх не чіпати
+        # Надсилаємо звіт у ТГ
+        send_telegram(f"🤖 **Звіт ШІ-рекрутера (Аналіз {len(links_to_save)} нових):**\n\n{report}")
+        
+        # Зберігаємо посилання
         save_processed_links(links_to_save)
     else:
         print("Нічого нового за 15 днів не знайдено.")
