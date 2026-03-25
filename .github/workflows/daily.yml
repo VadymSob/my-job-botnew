@@ -17,9 +17,9 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4
       - name: Run bot
-        env:
+       env:
           WORK_UA_COOKIE: ${{ secrets.WORK_UA_COOKIE }}
-          ROBOTA_UA_COOKIE: ${{ secrets.ROBOTA_UA_COOKIE }} # Додати цей рядок
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} # Додати цей рядок
         run: python bot.py
