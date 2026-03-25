@@ -9,17 +9,16 @@ QUERIES = ["комерційний директор"]
 LOCATIONS = ["ukraine", "vinnytsya"]
 DB_FILE = "processed_resumes.txt"
 
-# Полегшений промпт для обходу фільтрів безпеки ШІ
+# Покращений промпт
 AI_CRITERIA = """
-Ти - асистент рекрутера. Перед тобою список кандидатів.
-Твоє завдання: позначити тих, хто працював у харчовій промисловості (хліб, м'ясо, молоко, продукти).
+Ти - асистент рекрутера. Проаналізуй список. 
+Твоє завдання: позначити тих, хто працював у харчовій промисловості (хліб, м'ясо, молоко, продукти, FMCG Food).
 
-Для кожного напиши:
+Для кожного підходящого напиши:
 ✅ [Посада] - [Компанія/Сфера] - [Посилання]
-Якщо сфера не харчова (IT, будівництво тощо), напиши:
-❌ [Посада] - [Сфера] - [Посилання]
 
-Пиши коротко, без вступу.
+Для інших:
+❌ [Посада] - [Сфера] - [Посилання]
 """
 
 def get_processed_links():
@@ -34,23 +33,23 @@ def save_processed_links(links):
 
 def get_ai_analysis(candidate_batch):
     api_key = os.getenv("GEMINI_API_KEY")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # ОНОВЛЕНО: Використовуємо універсальну модель gemini-pro, яка стабільна в v1beta
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
     
     payload = {
-        "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок:\n{candidate_batch}"}]}],
-        "generationConfig": {"temperature": 0.1}
+        "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок кандидатів:\n{candidate_batch}"}]}]
     }
     
     try:
         r = requests.post(url, json=payload, timeout=60)
         res = r.json()
-        if 'candidates' in res and 'content' in res['candidates'][0]:
+        if 'candidates' in res:
             return res['candidates'][0]['content']['parts'][0]['text']
         else:
-            print(f"DEBUG: ШІ не дав результату. Відповідь: {res}")
+            print(f"DEBUG: Помилка API. Відповідь: {res}")
             return None
     except Exception as e:
-        print(f"DEBUG: Помилка запиту до ШІ: {e}")
+        print(f"DEBUG: Виняток: {e}")
         return None
 
 def get_work_ua_data():
@@ -67,14 +66,14 @@ def get_work_ua_data():
                 soup = BeautifulSoup(r.text, 'html.parser')
                 cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
                 
-                for card in cards[:20]: # Беремо перші 20 для тесту
+                for card in cards[:15]:
                     link_tag = card.find('a', href=True)
                     if link_tag:
                         link = "https://www.work.ua" + link_tag['href'].split('?')[0]
                         if link not in processed:
                             title = link_tag.get_text(strip=True)
                             desc = card.find('p', class_='text-muted')
-                            desc_text = desc.get_text(strip=True) if desc else "Немає опису"
+                            desc_text = desc.get_text(strip=True) if desc else ""
                             
                             all_candidates.append(f"Посада: {title}\nДосвід: {desc_text}\nПосилання: {link}")
                             new_links.append(link)
@@ -93,19 +92,13 @@ def send_telegram(message):
 if __name__ == "__main__":
     candidates, links = get_work_ua_data()
     if candidates:
-        print(f"Знайдено кандидатів: {len(candidates)}. Надсилаю на аналіз...")
-        
-        # Обробка групами по 10
         for i in range(0, len(candidates), 10):
             batch = "\n\n".join(candidates[i:i+10])
             report = get_ai_analysis(batch)
-            
             if report:
-                print(f"--- ЗВІТ ШІ (Частина {i//10 + 1}) ---\n{report}\n")
-                send_telegram(f"🔍 Звіт {i//10 + 1}:\n\n{report}")
+                send_telegram(f"🔍 Звіт ШІ:\n\n{report}")
             else:
-                print(f"Група {i//10 + 1}: ШІ нічого не повернув.")
-        
+                print("ШІ не зміг проаналізувати цю групу.")
         save_processed_links(links)
     else:
-        print("Нових записів немає.")
+        print("Нових кандидатів немає.")
