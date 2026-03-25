@@ -3,12 +3,19 @@ from bs4 import BeautifulSoup
 import os
 import urllib.parse
 
-# --- 1. КРИТЕРІЇ ВІДБОРУ ---
+# --- 1. КРИТЕРІЇ ВІДБОРУ (БІЛЬШ СУВОРІ) ---
 AI_CRITERIA = """
 Ти - рекрутер хлібозаводу (Вінниця). Шукаємо Керівника продажу/Комерційного директора.
-Специфіка: FMCG (хліб). 
-ЗАВДАННЯ: Проаналізуй список. Відсій тих, хто не з продуктів або без досвіду управління.
-Напиши коротко: ✅ ПІБ - чому підходить - Посилання.
+Специфіка: FMCG (хліб, продукти харчування). 
+
+ЗАВДАННЯ: 
+1. Проаналізуй список резюме. 
+2. Відсій тих, хто НЕ працював з продуктами харчування або НЕ має досвіду управління командою.
+3. ВІДПОВІДАЙ СУВОРО за шаблоном для кожного підходящого:
+✅ [ПІБ/Посада] - [Коротко: чому підходить] - [Посилання]
+
+Якщо підходящих немає, напиши: "Сьогодні релевантних кандидатів не знайдено."
+Не пиши вступних фраз на кшталт "Я проаналізував...". Тільки список.
 """
 
 def get_ai_analysis(candidate_data):
@@ -16,14 +23,11 @@ def get_ai_analysis(candidate_data):
     if not api_key: return "⚠️ Помилка: Немає API ключа."
 
     try:
-        # ЗБІЛЬШЕНО ТАЙМАУТ до 60 секунд для стабільності
         timeout_val = 60 
-        
-        # КРОК 1: Отримуємо назву моделі автоматично
+        # Автопідбір моделі
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
         list_res = requests.get(list_url, timeout=timeout_val).json()
         
-        # Вибираємо першу модель, що підтримує генерацію
         target_model = None
         if 'models' in list_res:
             for m in list_res['models']:
@@ -31,18 +35,13 @@ def get_ai_analysis(candidate_data):
                     target_model = m['name']
                     break
         
-        if not target_model:
-            return "❌ Не вдалося знайти робочу модель у вашому акаунті."
+        if not target_model: return "❌ Робочу модель не знайдено."
 
-        # КРОК 2: Відправляємо запит на аналіз
+        # Аналіз
         url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
-        
         payload = {
-            "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидати:\n{candidate_data}"}]}],
-            "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 1000, # Обмежуємо відповідь, щоб була швидшою
-            }
+            "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидати для аналізу:\n{candidate_data}"}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1500}
         }
         
         r = requests.post(url, json=payload, timeout=timeout_val)
@@ -51,10 +50,8 @@ def get_ai_analysis(candidate_data):
         if 'candidates' in res:
             return res['candidates'][0]['content']['parts'][0]['text']
         else:
-            return f"⚠️ Помилка відповіді від {target_model}: {res.get('error', {}).get('message', 'Unknown error')}"
+            return f"⚠️ Помилка ШІ: {res.get('error', {}).get('message', 'Немає відповіді')}"
             
-    except requests.exceptions.Timeout:
-        return "❌ Помилка: Google занадто довго думав (Таймаут). Спробуйте запустити ще раз."
     except Exception as e:
         return f"❌ Помилка: {str(e)}"
 
@@ -67,7 +64,7 @@ def get_work_ua():
         soup = BeautifulSoup(r.text, 'html.parser')
         cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
         data = ""
-        for card in cards[:8]: # Зменшили до 8, щоб ШІ швидше обробляв
+        for card in cards[:10]:
             link = card.find('a', href=True)
             info = card.find('p', class_='text-muted')
             if link:
@@ -80,13 +77,12 @@ def send_telegram(message):
     chat_id = os.getenv("CHAT_ID")
     if not token or not chat_id: return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    # Текстовий режим для кращої читаємості
     requests.post(url, data={"chat_id": chat_id, "text": message[:4000], "disable_web_page_preview": True})
 
 if __name__ == "__main__":
     raw_candidates = get_work_ua()
     if raw_candidates:
         report = get_ai_analysis(raw_candidates)
-        send_telegram(f"🤖 Звіт ШІ-рекрутера (Хлібозавод):\n\n{report}")
+        send_telegram(f"🤖 **Звіт ШІ-рекрутера:**\n\n{report}")
     else:
-        send_telegram("📭 Нових резюме сьогодні не знайдено.")
+        send_telegram("📭 Сьогодні на Work.ua нових кандидатів не знайдено.")
