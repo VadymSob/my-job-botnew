@@ -4,17 +4,21 @@ import os
 import urllib.parse
 import time
 
-# --- 1. ПАРАМЕТРИ ---
-QUERIES = ["комерційний директор", "директор хлібзаводу", "керівник відділу продажу"]
+# --- 1. ПАРАМЕТРИ ПОШУКУ (СТРОГО КОМЕРЦІЯ + СКОРОПОРТ) ---
+QUERIES = ["комерційний директор", "commercial director", "директор з продажу"]
 LOCATIONS = ["ukraine", "vinnytsya"]
-MAX_PAGES = 2 # 2 сторінки достатньо, щоб не "заспамити" ШІ
 DB_FILE = "processed_resumes.txt"
 
 AI_CRITERIA = """
-Ти - рекрутер хлібозаводу. Шукаємо ТОП-менеджера.
-ПРІОРИТЕТ: Досвід на ХЛІБОЗАВОДАХ, хлібокомбінатах, КХП, м'ясокомбінатах, молочці (FMCG Food).
-ФОРМАТ: ✅ [ПІБ/Посада] - [Чому підходить] - [Посилання]
-Якщо в списку немає релевантних, просто нічого не пиши.
+Ти - рекрутер хлібозаводу. Шукаємо Комерційного директора.
+СУВОРІ КРИТЕРІЇ ВІДБОРУ:
+1. ДОСВІД В КОМЕРЦІЇ (СКОРОПОРТ): Шукай досвід з продуктами харчування, що мають короткий термін зберігання (Хліб, Молочна продукція, М'ясо, Свіжа кондитерка).
+2. ПРІОРИТЕТ: Люди з хлібозаводів, м'ясокомбінатів або молочних холдингів.
+3. ВІДКИДАЙ: Алкоголь, бакалію, заморозку, нехарчові товари (Non-food), IT, будівництво.
+4. ЛОКАЦІЯ: Вінниця АБО готовність до переїзду (якщо кандидат ТОП-рівня).
+
+ФОРМАТ ВІДПОВІДІ:
+✅ [ПІБ] - [Конкретний досвід зі скоропортом (напр. 8 років хлібокомбінат)] - [Посилання]
 """
 
 def get_processed_links():
@@ -30,18 +34,18 @@ def save_processed_links(links):
 def get_ai_analysis(candidate_batch):
     api_key = os.getenv("GEMINI_API_KEY")
     try:
-        # Авто-вибір моделі
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
         list_res = requests.get(list_url, timeout=30).json()
         target_model = next((m['name'] for m in list_res.get('models', []) if 'generateContent' in m['supportedGenerationMethods']), "models/gemini-1.5-flash")
         
         url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
-        payload = {"contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидати:\n{candidate_batch}"}]}]}
+        payload = {"contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидати:\n{candidate_batch}"}]}], "generationConfig": {"temperature": 0.1}}
         
         r = requests.post(url, json=payload, timeout=60)
         res = r.json()
         if 'candidates' in res:
-            return res['candidates'][0]['content']['parts'][0]['text']
+            text = res['candidates'][0]['content']['parts'][0]['text']
+            return text if "✅" in text else None
     except: return None
     return None
 
@@ -53,7 +57,8 @@ def get_work_ua_data():
     
     for loc in LOCATIONS:
         for q in QUERIES:
-            for page in range(1, MAX_PAGES + 1):
+            # Дивимось 2 сторінки, щоб знайти найкращих
+            for page in range(1, 3):
                 url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=122&page={page}"
                 try:
                     r = requests.get(url, headers=headers, timeout=20)
@@ -70,6 +75,7 @@ def get_work_ua_data():
                                 info = card.find('p', class_='text-muted')
                                 all_candidates.append(f"КАНДИДАТ: {name}\nІНФО: {info.get_text(strip=True) if info else ''}\nПОСИЛАННЯ: {link}")
                                 new_links_to_save.append(link)
+                                processed.add(link)
                     time.sleep(1)
                 except: continue
     return all_candidates, new_links_to_save
@@ -83,17 +89,12 @@ def send_telegram(message):
 
 if __name__ == "__main__":
     candidates, links = get_work_ua_data()
-    
     if candidates:
-        # Розбиваємо 56 кандидатів на групи по 10 осіб
         batch_size = 10
         for i in range(0, len(candidates), batch_size):
             batch = "\n\n".join(candidates[i:i+batch_size])
             report = get_ai_analysis(batch)
-            if report and len(report) > 10:
-                send_telegram(f"🤖 **Звіт ШІ (Частина {i//batch_size + 1}):**\n\n{report}")
-            time.sleep(2) # Пауза між запитами до ШІ
-            
+            if report:
+                send_telegram(f"👔 **Комерційні директори (Скоропорт):**\n\n{report}")
+            time.sleep(2)
         save_processed_links(links)
-    else:
-        print("Нічого нового.")
