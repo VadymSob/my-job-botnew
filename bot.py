@@ -4,14 +4,16 @@ import os
 import urllib.parse
 import time
 
-# --- НАЛАШТУВАННЯ ПОШУКУ ---
+# --- НАЛАШТУВАННЯ ---
 QUERIES = ["комерційний директор", "commercial director"]
 LOCATIONS = ["ukraine", "vinnytsya"]
 DB_FILE = "processed_resumes.txt"
 
 AI_CRITERIA = """
-Ти - рекрутер. Познач тих, хто працював у харчовій промисловості (хліб, м'ясо, молоко, продукти, FMCG Food).
-✅ [Посада] - [Компанія/Сфера] - [Посилання]
+Ти - рекрутер. Стисло проаналізуй досвід. 
+Шукаємо: Комерційний директор (Харчова промисловість/Скоропорт).
+Формат:
+✅ [Посада] - [Коротко досвід] - [Посилання]
 ❌ [Посада] - [Сфера] - [Посилання]
 """
 
@@ -28,41 +30,32 @@ def save_processed_links(links):
 def get_ai_analysis(candidate_batch):
     api_key = os.getenv("GEMINI_API_KEY")
     try:
-        # 1. Запитуємо список доступних моделей, щоб не вгадувати назву
+        # Авто-вибір моделі
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        models_res = requests.get(list_url).json()
-        
-        # Шукаємо будь-яку модель, що підтримує генерацію контенту (flash або pro)
+        models_res = requests.get(list_url, timeout=30).json()
         active_model = next((m['name'] for m in models_res.get('models', []) 
-                            if 'generateContent' in m['supportedGenerationMethods']), None)
-        
-        if not active_model:
-            print("DEBUG: Не знайдено жодної доступної моделі в API.")
-            return None
+                            if 'generateContent' in m['supportedGenerationMethods']), "models/gemini-1.5-flash")
 
-        # 2. Відправляємо запит до знайденої моделі
         url = f"https://generativelanguage.googleapis.com/v1beta/{active_model}:generateContent?key={api_key}"
         payload = {
-            "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок:\n{candidate_batch}"}]}],
+            "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидати:\n{candidate_batch}"}]}],
             "generationConfig": {"temperature": 0.1}
         }
         
-        r = requests.post(url, json=payload, timeout=60)
+        # Збільшений таймаут до 120 секунд
+        r = requests.post(url, json=payload, timeout=120)
         res = r.json()
         if 'candidates' in res:
             return res['candidates'][0]['content']['parts'][0]['text']
-        else:
-            print(f"DEBUG: Помилка генерації. Відповідь: {res}")
-            return None
     except Exception as e:
-        print(f"DEBUG: Виняток: {e}")
+        print(f"DEBUG: Помилка (спробуйте менші порції): {e}")
         return None
 
 def get_work_ua_data():
     processed = get_processed_links()
     all_candidates = []
     new_links = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     for loc in LOCATIONS:
         for q in QUERIES:
@@ -90,21 +83,23 @@ def get_work_ua_data():
 def send_telegram(message):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("CHAT_ID")
-    if not token or not chat_id: return
+    if not token or not chat_id or not message.strip(): return
     requests.post(f"https://api.telegram.org/bot{token}/sendMessage", 
-                  data={"chat_id": chat_id, "text": message[:4000], "disable_web_page_preview": True})
+                  data={"chat_id": chat_id, "text": message, "disable_web_page_preview": True})
 
 if __name__ == "__main__":
     candidates, links = get_work_ua_data()
     if candidates:
-        print(f"Знайдено: {len(candidates)}. Визначаю активну модель та аналізую...")
-        for i in range(0, len(candidates), 10):
-            batch = "\n\n".join(candidates[i:i+10])
+        print(f"Знайдено: {len(candidates)}. Обробка маленькими порціями...")
+        # ОБРОБКА ПО 3 КАНДИДАТИ (щоб не було TimeOut)
+        batch_size = 3
+        for i in range(0, len(candidates), batch_size):
+            batch = "\n\n".join(candidates[i:i+batch_size])
             report = get_ai_analysis(batch)
             if report:
-                send_telegram(f"👔 Звіт (Скоропорт):\n\n{report}")
-            else:
-                print("ШІ не зміг дати відповідь.")
+                send_telegram(f"👔 Звіт ШІ (Частина {i//batch_size + 1}):\n\n{report}")
+                print(f"Група {i//batch_size + 1} надіслана.")
+            time.sleep(5) # Пауза між запитами, щоб API не "забанив"
         save_processed_links(links)
     else:
-        print("Нових немає.")
+        print("Нових кандидатів немає.")
