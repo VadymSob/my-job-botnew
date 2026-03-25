@@ -2,59 +2,42 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import urllib.parse
-import json
 
-# --- НАЛАШТУВАННЯ ВАШОГО ШІ-РЕКРУТЕРА ---
+# --- КРИТЕРІЇ ШІ-РЕКРУТЕРА ---
 AI_CRITERIA = """
 Ти - комерційний директор хлібозаводу. Шукаємо Керівника відділу продажу або Комерційного директора (Вінницька обл.).
-Специфіка: Хлібобулочні вироби (швидкопсувний товар, складна логістика).
-СИТУАЦІЯ: Продажі падають, конкуренція зростає. Потрібен результат "тут і зараз".
+Специфіка: Хлібобулочні вироби (швидкопсувний товар).
+СИТУАЦІЯ: Продажі падають, конкуренція зростає. 
 
 КРИТЕРІЇ ВІДБОРУ:
-1. ДОСВІД: Обов'язково FMCG (продукти харчування). Досвід з хлібом, молочкою або м'ясом - величезний плюс.
-2. СКІЛИ: Побудова системних продажів, управління командою (навчання менеджерів), розвиток території.
-3. ЕКОНОМІКА: Розуміння маржинальності, повернень, цілей по об'ємах.
-4. ЛОКАЦІЯ: Знання території Вінницької області.
+1. ДОСВІД: Обов'язково FMCG (продукти харчування). Хліб, молочка, м'ясо - пріоритет.
+2. СКІЛИ: Побудова системних продажів, навчання менеджерів, розвиток території Вінниччини.
+3. ЕКОНОМІКА: Розуміння маржі, повернень, цілей по об'ємах.
 
-ЗАВДАННЯ ТЕБІ:
-- Проаналізуй резюме. 
-- ВІДСІЙ: тих, хто не працював з продуктами (наприклад, будматеріали, страхування, IT).
-- ВІДСІЙ: лінійних менеджерів без досвіду керування людьми.
-- ВИДІЛИ: тих, хто має досвід роботи у кризових ситуаціях або на ринку з високою конкуренцією.
+ЗАВДАННЯ: 
+- Проаналізуй список кандидатів.
+- Відсій тих, хто не з продуктів або не має досвіду управління.
+- Напиши результат для кожного підходящого: "✅ ПІБ - чому підходить - посилання".
 """
 
 def get_ai_analysis(candidate_data):
     api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key: return "⚠️ Помилка: Немає API ключа Gemini"
+    if not api_key: return "⚠️ Помилка: Не додано GEMINI_API_KEY у Secrets."
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    prompt = f"{AI_CRITERIA}\n\nСписок кандидатів:\n{candidate_data}"
     
-    prompt = f"""
-    Ти - професійний рекрутер. Проаналізуй список кандидатів нижче згідно з цими критеріями:
-    {AI_CRITERIA}
-
-    Список кандидатів:
-    {candidate_data}
-
-    Для кожного підходящого кандидата напиши:
-    ✅ [Ім'я/Посада] - [Чому підходить коротко] - [Посилання]
-    
-    Якщо кандидат не підходить, просто проігноруй його.
-    В кінці додай коротке резюме: "Знайдено X цікавих кандидатів".
-    """
-
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         r = requests.post(url, json=payload, timeout=30)
-        result = r.json()
-        return result['candidates'][0]['content']['parts'][0]['text']
+        res = r.json()
+        return res['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
-        return f"❌ Помилка ШІ-аналізу: {e}"
+        return f"❌ Помилка аналізу ШІ: {str(e)}"
 
 def get_work_ua():
-    base_url = "https://www.work.ua/resumes-vinnytsya-"
     query = urllib.parse.quote("комерційний директор")
-    url = f"{base_url}{query}/"
+    url = f"https://www.work.ua/resumes-vinnytsya-{query}/"
     headers = {"User-Agent": "Mozilla/5.0", "Cookie": os.getenv("WORK_UA_COOKIE", "")}
     
     try:
@@ -62,29 +45,26 @@ def get_work_ua():
         soup = BeautifulSoup(response.text, 'html.parser')
         cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
         
-        candidates_raw = ""
-        for card in cards[:10]: # Даємо ШІ на аналіз 10 кандидатів
-            link_tag = card.find('a', href=True)
-            info_tag = card.find('p', class_='text-muted')
-            if link_tag:
-                name = link_tag.get_text(strip=True)
-                info = info_tag.get_text(strip=True) if info_tag else ""
-                link = "https://www.work.ua" + link_tag['href']
-                candidates_raw += f"Кандидат: {name}. Опис: {info}. Посилання: {link}\n\n"
-        
-        return candidates_raw
+        data = ""
+        for card in cards[:10]:
+            link = card.find('a', href=True)
+            info = card.find('p', class_='text-muted')
+            if link:
+                data += f"Кандидат: {link.get_text(strip=True)}\nДосвід: {info.get_text(strip=True) if info else ''}\nПосилання: https://www.work.ua{link['href']}\n\n"
+        return data
     except: return ""
 
 def send_telegram(message):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("CHAT_ID")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+    # Обрізаємо повідомлення, якщо воно занадто довге для Telegram
+    requests.post(url, data={"chat_id": chat_id, "text": message[:4000], "parse_mode": "Markdown"})
 
 if __name__ == "__main__":
-    raw_data = get_work_ua()
-    if raw_data:
-        ai_report = get_ai_analysis(raw_data)
-        send_telegram(f"🤖 **ШІ-аналіз нових резюме**\n\n{ai_report}")
+    raw_candidates = get_work_ua()
+    if raw_candidates:
+        report = get_ai_analysis(raw_candidates)
+        send_telegram(f"🤖 **Звіт ШІ-рекрутера (Хлібобулочні вироби):**\n\n{report}")
     else:
-        send_telegram("📭 Нових кандидатів для аналізу не знайдено.")
+        send_telegram("📭 Нових резюме на Work.ua сьогодні не знайдено.")
