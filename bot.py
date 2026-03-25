@@ -11,10 +11,10 @@ DB_FILE = "processed_resumes.txt"
 
 AI_CRITERIA = """
 Ти - рекрутер. Стисло проаналізуй досвід. 
-Шукаємо: Комерційний директор (Харчова промисловість/Скоропорт).
+Шукаємо: Комерційний директор (Харчова промисловість/Скоропорт/FMCG).
 Формат:
 ✅ [Посада] - [Коротко досвід] - [Посилання]
-❌ [Посада] - [Сфера] - [Посилання]
+❌ [Посада] - [Сфера/Причина] - [Посилання]
 """
 
 def get_processed_links():
@@ -27,10 +27,10 @@ def save_processed_links(links):
     with open(DB_FILE, "a") as f:
         for link in links: f.write(link + "\n")
 
-def get_ai_analysis(candidate_batch):
+def get_ai_analysis(candidate_single):
     api_key = os.getenv("GEMINI_API_KEY")
     try:
-        # Авто-вибір моделі
+        # Авто-вибір моделі через сервісний запит
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
         models_res = requests.get(list_url, timeout=30).json()
         active_model = next((m['name'] for m in models_res.get('models', []) 
@@ -38,17 +38,17 @@ def get_ai_analysis(candidate_batch):
 
         url = f"https://generativelanguage.googleapis.com/v1beta/{active_model}:generateContent?key={api_key}"
         payload = {
-            "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидати:\n{candidate_batch}"}]}],
+            "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nКандидат:\n{candidate_single}"}]}],
             "generationConfig": {"temperature": 0.1}
         }
         
-        # Збільшений таймаут до 120 секунд
+        # 120 секунд для ОДНОГО кандидата - це з головою
         r = requests.post(url, json=payload, timeout=120)
         res = r.json()
         if 'candidates' in res:
             return res['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
-        print(f"DEBUG: Помилка (спробуйте менші порції): {e}")
+        print(f"DEBUG Помилка на одному кандидаті: {e}")
         return None
 
 def get_work_ua_data():
@@ -65,7 +65,7 @@ def get_work_ua_data():
                 soup = BeautifulSoup(r.text, 'html.parser')
                 cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
                 
-                for card in cards[:15]:
+                for card in cards[:15]: # Беремо 15 найсвіжіших
                     link_tag = card.find('a', href=True)
                     if link_tag:
                         link = "https://www.work.ua" + link_tag['href'].split('?')[0]
@@ -90,16 +90,19 @@ def send_telegram(message):
 if __name__ == "__main__":
     candidates, links = get_work_ua_data()
     if candidates:
-        print(f"Знайдено: {len(candidates)}. Обробка маленькими порціями...")
-        # ОБРОБКА ПО 3 КАНДИДАТИ (щоб не було TimeOut)
-        batch_size = 3
-        for i in range(0, len(candidates), batch_size):
-            batch = "\n\n".join(candidates[i:i+batch_size])
-            report = get_ai_analysis(batch)
+        print(f"Знайдено: {len(candidates)}. Аналізую по одному...")
+        
+        # Аналіз кожного кандидата ОКРЕМО
+        for i, cand in enumerate(candidates):
+            report = get_ai_analysis(cand)
             if report:
-                send_telegram(f"👔 Звіт ШІ (Частина {i//batch_size + 1}):\n\n{report}")
-                print(f"Група {i//batch_size + 1} надіслана.")
-            time.sleep(5) # Пауза між запитами, щоб API не "забанив"
+                send_telegram(f"👤 Кандидат {i+1} з {len(candidates)}:\n\n{report}")
+                print(f"Кандидат {i+1} оброблений.")
+            
+            # Невелика пауза між запитами до Google API (3-4 секунди)
+            time.sleep(4) 
+            
         save_processed_links(links)
+        print("Всі кандидати оброблені.")
     else:
         print("Нових кандидатів немає.")
