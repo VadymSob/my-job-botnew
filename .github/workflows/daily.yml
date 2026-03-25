@@ -3,23 +3,26 @@ name: Daily Resume Check
 on:
   schedule:
     - cron: '0 7 * * *' # Щодня о 09:00 за Києвом
-  workflow_dispatch: # Дозволяє запускати вручну
+  workflow_dispatch: # Дозволяє запуск вручну
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Даємо дозволи на запис файлів у репозиторій
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4
+        run: pip install requests beautifulsoup4
 
       - name: Run bot
         run: python bot.py
@@ -28,3 +31,14 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name 'GitHub Action Bot'
+          git config --global user.email 'action@github.com'
+          # Створюємо файл, якщо його ще немає, щоб git не видав помилку
+          touch processed_resumes.txt
+          git add processed_resumes.txt
+          # Комітимо тільки якщо є зміни
+          git commit -m "Update processed resumes list [skip ci]" || echo "No changes to commit"
+          git push
