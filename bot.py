@@ -28,8 +28,8 @@ def get_ai_analysis(candidate_data):
     if not api_key: 
         return "⚠️ Помилка: GEMINI_API_KEY не знайдено в Secrets GitHub."
 
-    # Використовуємо стабільну версію v1 та модель gemini-1.5-flash
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # Використовуємо повний шлях до моделі, який зазвичай виправляє помилку "not found"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
     
     prompt = f"{AI_CRITERIA}\n\nСписок кандидатів для аналізу:\n{candidate_data}"
     
@@ -47,77 +47,56 @@ def get_ai_analysis(candidate_data):
         r = requests.post(url, json=payload, timeout=30)
         res = r.json()
         
-        # Обробка відповіді
+        # Перевірка наявності відповіді
         if 'candidates' in res and len(res['candidates']) > 0:
             content = res['candidates'][0].get('content')
             if content and 'parts' in content:
                 return content['parts'][0]['text']
             else:
-                return "⚠️ ШІ повернув порожню відповідь (кандидати відфільтровані або помилка вмісту)."
+                return "⚠️ ШІ не зміг сформувати текст (можливо, через внутрішні фільтри)."
         elif 'error' in res:
-            return f"❌ Помилка Google API: {res['error'].get('message', 'Unknown error')}"
+            # Якщо gemini-pro теж не знайдено, спробуємо gemini-1.5-pro як останній шанс
+            return f"❌ Помилка API: {res['error'].get('message')}"
         else:
-            return f"⚠️ Неочікувана відповідь від ШІ. Перевірте структуру: {str(res)[:200]}"
+            return "⚠️ Невідома помилка відповіді ШІ."
     except Exception as e:
-        return f"❌ Технічна помилка зв'язку з ШІ: {str(e)}"
+        return f"❌ Технічна помилка зв'язку: {str(e)}"
 
 # --- 3. ЗБІР ДАНИХ З WORK.UA ---
 def get_work_ua_data():
     query = urllib.parse.quote("комерційний директор")
     url = f"https://www.work.ua/resumes-vinnytsya-{query}/"
-    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Cookie": os.getenv("WORK_UA_COOKIE", "")
     }
-    
     try:
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
-        
-        if not cards:
-            return None
-
-        candidates_text = ""
+        if not cards: return None
+        data = ""
         for card in cards[:12]: 
-            link_tag = card.find('a', href=True)
-            info_tag = card.find('p', class_='text-muted')
-            if link_tag:
-                name = link_tag.get_text(strip=True)
-                info = info_tag.get_text(strip=True) if info_tag else "Досвід не вказано"
-                link = "https://www.work.ua" + link_tag['href']
-                candidates_text += f"КАНДИДАТ: {name}\nІНФО: {info}\nПОСИЛАННЯ: {link}\n\n"
-        
-        return candidates_text
-    except Exception as e:
-        return None
+            link = card.find('a', href=True)
+            info = card.find('p', class_='text-muted')
+            if link:
+                data += f"КАНДИДАТ: {link.get_text(strip=True)}\nІНФО: {info.get_text(strip=True) if info else ''}\nПОСИЛАННЯ: https://www.work.ua{link['href']}\n\n"
+        return data
+    except: return None
 
 # --- 4. НАДІСЛАННЯ В TELEGRAM ---
 def send_telegram(message):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("CHAT_ID")
     if not token or not chat_id: return
-    
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
-    if len(message) > 4000:
-        message = message[:4000] + "..."
-        
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
-    requests.post(url, data=payload)
+    if len(message) > 4000: message = message[:4000] + "..."
+    requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True})
 
-# --- 5. ГОЛОВНИЙ ЗАПУСК ---
 if __name__ == "__main__":
-    raw_data = get_work_ua_data()
-    
-    if raw_data:
-        final_report = get_ai_analysis(raw_data)
+    raw_candidates = get_work_ua_data()
+    if raw_candidates:
+        final_report = get_ai_analysis(raw_candidates)
         send_telegram(f"🤖 **Звіт ШІ-рекрутера (Хлібозавод):**\n\n{final_report}")
     else:
-        send_telegram("📭 Сьогодні на Work.ua нових кандидатів не знайдено.")
+        send_telegram("📭 Сьогодні нових резюме на Work.ua не знайдено.")
