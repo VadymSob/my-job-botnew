@@ -9,7 +9,6 @@ QUERIES = ["комерційний директор", "commercial director"]
 LOCATIONS = ["ukraine", "vinnytsya"]
 DB_FILE = "processed_resumes.txt"
 
-# --- 2. СУВОРИЙ ТРИРІВНЕВИЙ ФІЛЬТР ---
 AI_CRITERIA = """
 Ти - професійний рекрутер. Класифікуй кандидатів.
 Шукаємо: Комерційний директор для харчового підприємства.
@@ -34,35 +33,39 @@ def save_processed_links(links):
     with open(DB_FILE, "a") as f:
         for link in links: f.write(link + "\n")
 
-def get_ai_analysis(batch_text):
+def get_ai_analysis(batch_text, retries=3):
     api_key = os.getenv("GEMINI_API_KEY")
     try:
-        # 1. Запитуємо у Google список доступних ВАМ моделей
+        # Авто-вибір активної моделі
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
         models_res = requests.get(list_url, timeout=30).json()
-        
-        # Знаходимо першу доступну модель, що вміє генерувати контент (flash або pro)
         active_model = next((m['name'] for m in models_res.get('models', []) 
                             if 'generateContent' in m['supportedGenerationMethods']), None)
         
-        if not active_model:
-            print("DEBUG: Не знайдено жодної доступної моделі в вашому API.")
-            return None
+        if not active_model: return None
 
-        # 2. Надсилаємо запит саме цій моделі
         url = f"https://generativelanguage.googleapis.com/v1beta/{active_model}:generateContent?key={api_key}"
         payload = {
             "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок:\n{batch_text}"}]}],
             "generationConfig": {"temperature": 0.0}
         }
         
-        r = requests.post(url, json=payload, timeout=60)
-        res = r.json()
-        if 'candidates' in res and len(res['candidates']) > 0:
-            return res['candidates'][0]['content']['parts'][0]['text']
-        else:
-            print(f"DEBUG: Помилка генерації ({active_model}): {res}")
-            return None
+        for attempt in range(retries):
+            r = requests.post(url, json=payload, timeout=60)
+            res = r.json()
+            
+            if 'candidates' in res:
+                return res['candidates'][0]['content']['parts'][0]['text']
+            
+            # Якщо сервер перевантажений (503), чекаємо і пробуємо ще раз
+            if r.status_code == 503 or "high demand" in str(res):
+                print(f"DEBUG: Сервер Google зайнятий. Спроба {attempt + 1} з {retries}...")
+                time.sleep(30)
+                continue
+            else:
+                print(f"DEBUG: Помилка API: {res}")
+                break
+        return None
     except Exception as e:
         print(f"DEBUG: Помилка запиту: {e}")
         return None
@@ -85,8 +88,8 @@ def get_work_ua_data():
                     if link_tag:
                         link = "https://www.work.ua" + link_tag['href'].split('?')[0]
                         if link not in processed:
-                            full_card_text = card.get_text(" ", strip=True)
-                            all_candidates.append(f"ДАНІ: {full_card_text}\nПосилання: {link}")
+                            full_text = card.get_text(" ", strip=True)
+                            all_candidates.append(f"ДАНІ: {full_text}\nПосилання: {link}")
                             new_links.append(link)
                             processed.add(link)
                 time.sleep(1)
@@ -106,7 +109,6 @@ if __name__ == "__main__":
     
     if candidates:
         print(f"Знайдено {len(candidates)}. Аналізую...")
-        # Обробляємо по 5 осіб для стабільності
         batch_size = 5
         for i in range(0, len(candidates), batch_size):
             batch = "\n---\n".join(candidates[i:i+batch_size])
