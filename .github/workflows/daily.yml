@@ -2,7 +2,7 @@ name: Daily Resume Check
 
 on:
   schedule:
-    - cron: '0 7 * * *' # Щодня о 09:00 за Києвом
+    - cron: '0 6 * * *' # Щодня о 09:00 за Києвом
   workflow_dispatch: # Дозволяє запуск вручну
 
 jobs:
