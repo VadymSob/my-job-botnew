@@ -23,7 +23,6 @@ AI_CRITERIA = """
 2. ✅ ПРІОРИТЕТ: Харчове виробництво (м'ясо, молоко, кондитерка) + готовність до переїзду.
 3. ❌ ВІДМОВА: Немає харчового досвіду АБО не готовий до переїзду у Вінницю.
 
-ПРАВИЛО ПЕРЕЇЗДУ: Якщо людина НЕ з Вінниці, шукай підтвердження готовності до релокації.
 Формат: [Результат] - [Посада] - [Місто/Переїзд] - [Компанія] - [Посилання]
 """
 
@@ -66,17 +65,16 @@ def send_telegram(message):
 
 def process_category(category_name, search_queries, model_name, processed):
     all_found = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
+    headers = {"User-Agent": "Mozilla/5.0"}
     for q in search_queries:
         for loc in LOCATIONS:
-            # ТИМЧАСОВО: 30 днів та ліміт 50 карток
-            url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=30"
+            # ПОВЕРТАЄМО 7 ДНІВ
+            url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=7"
             try:
                 r = requests.get(url, headers=headers, timeout=20)
                 soup = BeautifulSoup(r.text, 'html.parser')
                 cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
-                for card in cards[:50]:
+                for card in cards[:20]:
                     link_tag = card.find('a', href=True)
                     if link_tag:
                         link = "https://www.work.ua" + link_tag['href'].split('?')[0]
@@ -86,14 +84,12 @@ def process_category(category_name, search_queries, model_name, processed):
                             processed.add(link)
                 time.sleep(1)
             except: continue
-            
     if all_found:
-        print(f"Знайдено {len(all_found)} потенційних кандидатів у категорії {category_name}. Аналізую...")
         for i in range(0, len(all_found), 5):
             batch = "\n---\n".join(all_found[i:i+5])
             report = get_ai_analysis(batch, model_name)
             if report:
-                send_telegram(f"🔥 **ГЛОБАЛЬНИЙ ПОШУК (30 днів): {category_name}**\n\n{report}")
+                send_telegram(f"🌍 **{category_name} (Україна/Переїзд):**\n\n{report}")
             time.sleep(25)
         return [f.split("Посилання: ")[1] for f in all_found]
     return []
@@ -103,15 +99,9 @@ if __name__ == "__main__":
     active_model = get_active_model(api_key)
     processed = get_processed_links()
     total_new_links = []
-
-    print(f"МАСШТАБНИЙ ЗАПУСК. Аналіз за 30 днів по всій Україні...")
-
     for cat_name, queries in QUERIES.items():
         new_links = process_category(cat_name, queries, active_model, processed)
         total_new_links.extend(new_links)
-
     if total_new_links:
         save_processed_links(total_new_links)
-        print(f"Готово. Оброблено: {len(total_new_links)}")
-    else:
-        print("Навіть за 30 днів нових релевантних кандидатів не знайдено.")
+    print("Готово. Бот у режимі очікування нових резюме.")
