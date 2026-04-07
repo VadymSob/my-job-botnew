@@ -10,21 +10,26 @@ QUERIES = {
     "🏗️ НАЧАЛЬНИК ВИРОБНИЦТВА": ["начальник виробництва хліб", "керівник хлібопекарського виробництва"],
     "🧪 ТЕХНОЛОГ": ["технолог хлібобулочних", "головний технолог хліб"]
 }
-LOCATIONS = ["ukraine", "vinnytsya"]
+# Шукаємо по всій Україні
+LOCATIONS = ["ukraine"]
 DB_FILE = "processed_resumes.txt"
 
-# --- 2. СУВОРИЙ ФІЛЬТР ---
+# --- 2. СУВОРИЙ ФІЛЬТР З УРАХУВАННЯМ ПЕРЕЇЗДУ ---
 AI_CRITERIA = """
-Ти - професійний рекрутер хлібозаводу. Проаналізуй досвід кандидата.
-Шукаємо фахівців саме для ХЛІБОПЕКАРСЬКОЇ або ХАРЧОВОЇ галузі.
+Ти - професійний рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію.
+Шукаємо фахівців для ХЛІБОПЕКАРСЬКОЇ або ХАРЧОВОЇ галузі.
 
-КАТЕГОРІЇ:
-⭐ СУПЕР ПРІОРИТЕТ: Прямий досвід у хлібі/булочках/випічці.
-✅ ПРІОРИТЕТ: Досвід у харчовому виробництві (м'ясо, молоко, кондитерка).
-❌ ВІДМОВА: Досвід в IT, авто, будівництві, фармації або металургії.
+КРИТЕРІЇ ВІДБОРУ:
+1. ⭐ СУПЕР ПРІОРИТЕТ: Досвід у хлібі/випічці + локація Вінниця АБО готовий до переїзду.
+2. ✅ ПРІОРИТЕТ: Харчове виробництво (м'ясо, молоко, кондитерка) + готовність до переїзду.
+3. ❌ ВІДМОВА: 
+   - Немає харчового досвіду.
+   - Кандидат НЕ з Вінниці і вказав "Не готовий до переїзду".
+   - Сфери: IT, Авто, Будівництво.
 
-ПРАВИЛО: Якщо немає харчового досвіду — ПИШИ ❌. Не вигадуй компанії!
-Формат: [Результат] - [Посада] - [Компанія/Досвід] - [Посилання]
+ПРАВИЛО ПЕРЕЇЗДУ: Якщо людина з іншого міста (Київ, Львів тощо), шукай у тексті підтвердження готовності до переїзду (Relocation). Якщо вказано "Переїзд неможливий" — пиши ❌.
+
+Формат: [Результат] - [Посада] - [Місто/Переїзд] - [Компанія] - [Посилання]
 """
 
 def get_processed_links():
@@ -48,7 +53,7 @@ def get_ai_analysis(batch_text, model_name):
     api_key = os.getenv("GEMINI_API_KEY")
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
     payload = {
-        "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок:\n{batch_text}"}]}],
+        "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок кандидатів:\n{batch_text}"}]}],
         "generationConfig": {"temperature": 0.0}
     }
     try:
@@ -66,32 +71,35 @@ def send_telegram(message):
 
 def process_category(category_name, search_queries, model_name, processed):
     all_found = []
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     for q in search_queries:
         for loc in LOCATIONS:
+            # Збільшуємо глибину пошуку до 15 кандидатів за запит, бо Україна велика
             url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=7"
             try:
                 r = requests.get(url, headers=headers, timeout=20)
                 soup = BeautifulSoup(r.text, 'html.parser')
                 cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
-                for card in cards[:10]:
-                    link = "https://www.work.ua" + card.find('a', href=True)['href'].split('?')[0]
-                    if link not in processed:
-                        text = card.get_text(" ", strip=True)
-                        all_found.append(f"ДАНІ: {text}\nПосилання: {link}")
-                        processed.add(link)
+                for card in cards[:15]:
+                    link_tag = card.find('a', href=True)
+                    if link_tag:
+                        link = "https://www.work.ua" + link_tag['href'].split('?')[0]
+                        if link not in processed:
+                            # Збираємо весь текст картки (там зазвичай пише місто і готовність до переїзду)
+                            full_info = card.get_text(" ", strip=True)
+                            all_found.append(f"ДАНІ: {full_info}\nПосилання: {link}")
+                            processed.add(link)
                 time.sleep(1)
             except: continue
             
     if all_found:
-        # Аналізуємо пачками по 5, щоб ШІ не помилявся
         for i in range(0, len(all_found), 5):
             batch = "\n---\n".join(all_found[i:i+5])
             report = get_ai_analysis(batch, model_name)
             if report:
-                send_telegram(f"📌 **{category_name}** (Група {i//5 + 1}):\n\n{report}")
-            time.sleep(20) # Пауза для лімітів Google
+                send_telegram(f"🌍 **{category_name} (Вся Україна):**\n\n{report}")
+            time.sleep(25)
         return [f.split("Посилання: ")[1] for f in all_found]
     return []
 
@@ -101,15 +109,15 @@ if __name__ == "__main__":
     processed = get_processed_links()
     total_new_links = []
 
-    print(f"Запуск. Використовуємо модель: {active_model}")
+    print(f"Запуск розширеного пошуку. Модель: {active_model}")
 
     for cat_name, queries in QUERIES.items():
-        print(f"Шукаю: {cat_name}...")
+        print(f"Шукаю по всій країні: {cat_name}...")
         new_links = process_category(cat_name, queries, active_model, processed)
         total_new_links.extend(new_links)
 
     if total_new_links:
         save_processed_links(total_new_links)
-        print(f"Готово. Знайдено та оброблено: {len(total_new_links)}")
+        print(f"Готово. Оброблено нових: {len(total_new_links)}")
     else:
-        print("Нових резюме немає.")
+        print("Нових кандидатів з можливістю переїзду поки немає.")
