@@ -10,25 +10,20 @@ QUERIES = {
     "🏗️ НАЧАЛЬНИК ВИРОБНИЦТВА": ["начальник виробництва хліб", "керівник хлібопекарського виробництва"],
     "🧪 ТЕХНОЛОГ": ["технолог хлібобулочних", "головний технолог хліб"]
 }
-# Шукаємо по всій Україні
 LOCATIONS = ["ukraine"]
 DB_FILE = "processed_resumes.txt"
 
-# --- 2. СУВОРИЙ ФІЛЬТР З УРАХУВАННЯМ ПЕРЕЇЗДУ ---
+# --- 2. СУВОРИЙ ФІЛЬТР ---
 AI_CRITERIA = """
-Ти - професійний рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію.
+Ти - рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію.
 Шукаємо фахівців для ХЛІБОПЕКАРСЬКОЇ або ХАРЧОВОЇ галузі.
 
 КРИТЕРІЇ ВІДБОРУ:
 1. ⭐ СУПЕР ПРІОРИТЕТ: Досвід у хлібі/випічці + локація Вінниця АБО готовий до переїзду.
 2. ✅ ПРІОРИТЕТ: Харчове виробництво (м'ясо, молоко, кондитерка) + готовність до переїзду.
-3. ❌ ВІДМОВА: 
-   - Немає харчового досвіду.
-   - Кандидат НЕ з Вінниці і вказав "Не готовий до переїзду".
-   - Сфери: IT, Авто, Будівництво.
+3. ❌ ВІДМОВА: Немає харчового досвіду АБО не готовий до переїзду у Вінницю.
 
-ПРАВИЛО ПЕРЕЇЗДУ: Якщо людина з іншого міста (Київ, Львів тощо), шукай у тексті підтвердження готовності до переїзду (Relocation). Якщо вказано "Переїзд неможливий" — пиши ❌.
-
+ПРАВИЛО ПЕРЕЇЗДУ: Якщо людина НЕ з Вінниці, шукай підтвердження готовності до релокації.
 Формат: [Результат] - [Посада] - [Місто/Переїзд] - [Компанія] - [Посилання]
 """
 
@@ -75,18 +70,17 @@ def process_category(category_name, search_queries, model_name, processed):
     
     for q in search_queries:
         for loc in LOCATIONS:
-            # Збільшуємо глибину пошуку до 15 кандидатів за запит, бо Україна велика
-            url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=7"
+            # ТИМЧАСОВО: 30 днів та ліміт 50 карток
+            url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=30"
             try:
                 r = requests.get(url, headers=headers, timeout=20)
                 soup = BeautifulSoup(r.text, 'html.parser')
                 cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
-                for card in cards[:15]:
+                for card in cards[:50]:
                     link_tag = card.find('a', href=True)
                     if link_tag:
                         link = "https://www.work.ua" + link_tag['href'].split('?')[0]
                         if link not in processed:
-                            # Збираємо весь текст картки (там зазвичай пише місто і готовність до переїзду)
                             full_info = card.get_text(" ", strip=True)
                             all_found.append(f"ДАНІ: {full_info}\nПосилання: {link}")
                             processed.add(link)
@@ -94,11 +88,12 @@ def process_category(category_name, search_queries, model_name, processed):
             except: continue
             
     if all_found:
+        print(f"Знайдено {len(all_found)} потенційних кандидатів у категорії {category_name}. Аналізую...")
         for i in range(0, len(all_found), 5):
             batch = "\n---\n".join(all_found[i:i+5])
             report = get_ai_analysis(batch, model_name)
             if report:
-                send_telegram(f"🌍 **{category_name} (Вся Україна):**\n\n{report}")
+                send_telegram(f"🔥 **ГЛОБАЛЬНИЙ ПОШУК (30 днів): {category_name}**\n\n{report}")
             time.sleep(25)
         return [f.split("Посилання: ")[1] for f in all_found]
     return []
@@ -109,15 +104,14 @@ if __name__ == "__main__":
     processed = get_processed_links()
     total_new_links = []
 
-    print(f"Запуск розширеного пошуку. Модель: {active_model}")
+    print(f"МАСШТАБНИЙ ЗАПУСК. Аналіз за 30 днів по всій Україні...")
 
     for cat_name, queries in QUERIES.items():
-        print(f"Шукаю по всій країні: {cat_name}...")
         new_links = process_category(cat_name, queries, active_model, processed)
         total_new_links.extend(new_links)
 
     if total_new_links:
         save_processed_links(total_new_links)
-        print(f"Готово. Оброблено нових: {len(total_new_links)}")
+        print(f"Готово. Оброблено: {len(total_new_links)}")
     else:
-        print("Нових кандидатів з можливістю переїзду поки немає.")
+        print("Навіть за 30 днів нових релевантних кандидатів не знайдено.")
