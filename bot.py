@@ -14,16 +14,19 @@ QUERIES = {
 LOCATIONS = ["ukraine"]
 DB_FILE = "processed_resumes.txt"
 
-# --- 2. РОЗШИРЕНИЙ ФІЛЬТР ---
+# --- 2. СУВОРИЙ ФІЛЬТР ---
 AI_CRITERIA = """
 Ти - рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію кандидата.
-Вимоги:
+Шукаємо фахівців для ХЛІБОПЕКАРСЬКОЇ або ХАРЧОВОЇ галузі.
+
+КРИТЕРІЇ:
 1. КОМЕРЦІЙНИЙ/ВИРОБНИЦТВО/ТЕХНОЛОГ: Пріоритет - харчова сфера (хліб, м'ясо, молоко).
 2. ЛОГІСТ: Транспортна логістика, маршрути (Вінниця/область), контроль GPS, власний автопарк.
-КЛАСИФІКАЦІЯ:
+
 ⭐ СУПЕР ПРІОРИТЕТ: Відповідний досвід + Вінниця (або готовність до переїзду).
 ✅ ПРІОРИТЕТ: Харчовий досвід/Логістика FMCG + готовність до переїзду.
-❌ ВІДМОВА: Немає досвіду маршрутизації/харчового досвіду АБО не готовий до переїзду.
+❌ ВІДМОВА: Немає досвіду маршрутизації/харчового досвіду АБО не готовий до переїзду у Вінницю.
+
 Формат: [Результат] - [Вакансія] - [Місто/Переїзд] - [Досвід] - [Посилання]
 """
 
@@ -56,47 +59,47 @@ def get_ai_analysis(batch_text, model_name):
 def send_telegram(message):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("CHAT_ID")
-    if not token or not chat_id or not message.strip(): return
+    if not token or not chat_id: return
     requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={"chat_id": chat_id, "text": message, "disable_web_page_preview": True})
 
 def process_category(category_name, search_queries, model_name, processed):
     category_links = []
     candidates_to_analyze = []
-    # Імітуємо реальний браузер
+    
+    # Беремо Cookie з налаштувань GitHub
+    user_cookie = os.getenv("WORK_UA_COOKIE", "")
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8",
+        "Cookie": user_cookie
     }
     
     for q in search_queries:
+        # ШУКАЄМО ЗА 30 ДНІВ (для разового запуску)
         url = f"https://www.work.ua/resumes-ukraine-{urllib.parse.quote(q)}/?days=30"
         try:
             r = requests.get(url, headers=headers, timeout=30)
-            if r.status_code != 200:
-                print(f"Помилка доступу до Work.ua: {r.status_code}")
-                continue
+            if r.status_code != 200: continue
             
             soup = BeautifulSoup(r.text, 'html.parser')
-            # Work.ua часто змінює класи, шукаємо по декількох ознаках
-            cards = soup.find_all('div', class_=['card', 'card-hover', 'resume-link'])
-            if not cards:
-                # Спробуємо знайти по іншому селектору
-                cards = soup.select('div.card.card-resumes')
-
-            for card in cards[:30]:
+            # Пошук карток (різні варіанти класів)
+            cards = soup.find_all(['div', 'article'], class_=lambda x: x and ('card' in x or 'resume' in x))
+            
+            for card in cards[:40]:
                 link_tag = card.find('a', href=True)
                 if link_tag and '/resumes/' in link_tag['href']:
                     link = "https://www.work.ua" + link_tag['href'].split('?')[0]
                     if link not in processed:
                         info = card.get_text(" ", strip=True)
-                        candidates_to_analyze.append(f"ДАНІ: {info}\nПосилання: {link}")
-                        category_links.append(link)
-            time.sleep(2) # Пауза між запитами до сайту
-        except Exception as e:
-            print(f"Помилка на запиті {q}: {e}")
-    
+                        if len(info) > 100:
+                            candidates_to_analyze.append(f"ДАНІ: {info}\nПосилання: {link}")
+                            category_links.append(link)
+                            processed.add(link)
+            time.sleep(2)
+        except: continue
+            
     if candidates_to_analyze:
-        print(f"Знайдено {len(candidates_to_analyze)} нових для {category_name}. Аналізую...")
         for i in range(0, len(candidates_to_analyze), 5):
             batch = "\n---\n".join(candidates_to_analyze[i:i+5])
             report = get_ai_analysis(batch, model_name)
@@ -115,10 +118,9 @@ if __name__ == "__main__":
         print(f"Пошук {cat_name}...")
         res = process_category(cat_name, queries, active_model, processed)
         all_new.extend(res)
-        processed.update(res)
 
     if all_new:
         save_processed_links(all_new)
-        print(f"Завершено. Оброблено: {len(all_new)}")
+        print(f"Готово. Знайдено: {len(all_new)}")
     else:
-        print("Нікого не знайдено. Можливо, сайт тимчасово обмежив доступ.")
+        print("Нічого не знайдено. Перевірте Cookie!")
