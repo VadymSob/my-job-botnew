@@ -14,23 +14,20 @@ QUERIES = {
 LOCATIONS = ["ukraine"]
 DB_FILE = "processed_resumes.txt"
 
-# --- 2. РОЗШИРЕНИЙ ФІЛЬТР ДЛЯ ВСІХ ВАКАНСІЙ ---
+# --- 2. РОЗШИРЕНИЙ ФІЛЬТР ---
 AI_CRITERIA = """
 Ти - рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію кандидата.
 
-Вимоги за категоріями:
+Вимоги:
 1. КОМЕРЦІЙНИЙ/ВИРОБНИЦТВО/ТЕХНОЛОГ: Пріоритет - харчова сфера (хліб, м'ясо, молоко).
-2. ЛОГІСТ: 
-   - Шукаємо фахівця з транспортної логістики.
-   - Ключові навички: формування маршрутів (Вінниця та область), контроль GPS, власний автопарк.
-   - Досвід з FMCG (товари швидкого вжитку) або харчовими продуктами буде великим плюсом.
+2. ЛОГІСТ: Транспортна логістика, маршрути (Вінниця/область), контроль GPS, власний автопарк.
 
 КЛАСИФІКАЦІЯ:
 ⭐ СУПЕР ПРІОРИТЕТ: Відповідний досвід + Вінниця (або готовність до переїзду).
-✅ ПРІОРИТЕТ: Гарний досвід в інших сферах (наприклад, доставка води/пошти) + готовність до переїзду.
-❌ ВІДМОВА: Немає досвіду маршрутизації (тільки ЗЕД або складська логістика), немає готовності до Вінниці.
+✅ ПРІОРИТЕТ: Харчовий досвід/Логістика FMCG + готовність до переїзду.
+❌ ВІДМОВА: Немає досвіду маршрутизації/харчового досвіду АБО не готовий до переїзду.
 
-Формат відповіді: [Результат] - [Вакансія] - [Місто/Переїзд] - [Досвід/Навички] - [Посилання]
+Формат: [Результат] - [Вакансія] - [Місто/Переїзд] - [Досвід] - [Посилання]
 """
 
 def get_processed_links():
@@ -72,17 +69,17 @@ def send_telegram(message):
 
 def process_category(category_name, search_queries, model_name, processed):
     all_found = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     for q in search_queries:
         for loc in LOCATIONS:
-            # Для логістів шукаємо за останні 7 днів
-            url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=7"
+            # ТИМЧАСОВО: Шукаємо за 30 днів
+            url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=30"
             try:
                 r = requests.get(url, headers=headers, timeout=20)
                 soup = BeautifulSoup(r.text, 'html.parser')
                 cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
-                for card in cards[:15]:
+                for card in cards[:50]:
                     link_tag = card.find('a', href=True)
                     if link_tag:
                         link = "https://www.work.ua" + link_tag['href'].split('?')[0]
@@ -94,11 +91,12 @@ def process_category(category_name, search_queries, model_name, processed):
             except: continue
             
     if all_found:
+        print(f"Знайдено {len(all_found)} резюме у категорії {category_name}. Аналізую...")
         for i in range(0, len(all_found), 5):
             batch = "\n---\n".join(all_found[i:i+5])
             report = get_ai_analysis(batch, model_name)
             if report:
-                send_telegram(f"🚛 **{category_name}:**\n\n{report}")
+                send_telegram(f"🔍 **МАШТАБНИЙ ПОШУК (30 днів): {category_name}**\n\n{report}")
             time.sleep(25)
         return [f.split("Посилання: ")[1] for f in all_found]
     return []
@@ -109,15 +107,14 @@ if __name__ == "__main__":
     processed = get_processed_links()
     total_new_links = []
 
-    print(f"Запуск моніторингу (включаючи ЛОГІСТІВ). Модель: {active_model}")
+    print(f"Запуск масштабного пошуку (30 днів). Модель: {active_model}")
 
     for cat_name, queries in QUERIES.items():
-        print(f"Шукаю: {cat_name}...")
         new_links = process_category(cat_name, queries, active_model, processed)
         total_new_links.extend(new_links)
 
     if total_new_links:
         save_processed_links(total_new_links)
-        print(f"Готово. Знайдено та оброблено: {len(total_new_links)}")
+        print(f"Оброблено: {len(total_new_links)}")
     else:
-        print("Нових релевантних резюме поки немає.")
+        print("Нікого не знайдено навіть за місяць.")
