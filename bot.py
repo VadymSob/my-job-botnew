@@ -17,16 +17,13 @@ DB_FILE = "processed_resumes.txt"
 # --- 2. РОЗШИРЕНИЙ ФІЛЬТР ---
 AI_CRITERIA = """
 Ти - рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію кандидата.
-
 Вимоги:
 1. КОМЕРЦІЙНИЙ/ВИРОБНИЦТВО/ТЕХНОЛОГ: Пріоритет - харчова сфера (хліб, м'ясо, молоко).
 2. ЛОГІСТ: Транспортна логістика, маршрути (Вінниця/область), контроль GPS, власний автопарк.
-
 КЛАСИФІКАЦІЯ:
 ⭐ СУПЕР ПРІОРИТЕТ: Відповідний досвід + Вінниця (або готовність до переїзду).
 ✅ ПРІОРИТЕТ: Харчовий досвід/Логістика FMCG + готовність до переїзду.
 ❌ ВІДМОВА: Немає досвіду маршрутизації/харчового досвіду АБО не готовий до переїзду.
-
 Формат: [Результат] - [Вакансія] - [Місто/Переїзд] - [Досвід] - [Посилання]
 """
 
@@ -50,71 +47,78 @@ def get_active_model(api_key):
 def get_ai_analysis(batch_text, model_name):
     api_key = os.getenv("GEMINI_API_KEY")
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
-    payload = {
-        "contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок кандидатів:\n{batch_text}"}]}],
-        "generationConfig": {"temperature": 0.0}
-    }
+    payload = {"contents": [{"parts": [{"text": f"{AI_CRITERIA}\n\nСписок кандидатів:\n{batch_text}"}]}], "generationConfig": {"temperature": 0.0}}
     try:
         r = requests.post(url, json=payload, timeout=60)
-        res = r.json()
-        return res['candidates'][0]['content']['parts'][0]['text'] if 'candidates' in res else None
+        return r.json()['candidates'][0]['content']['parts'][0]['text']
     except: return None
 
 def send_telegram(message):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("CHAT_ID")
     if not token or not chat_id or not message.strip(): return
-    requests.post(f"https://api.telegram.org/bot{token}/sendMessage", 
-                  data={"chat_id": chat_id, "text": message, "disable_web_page_preview": True})
+    requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={"chat_id": chat_id, "text": message, "disable_web_page_preview": True})
 
 def process_category(category_name, search_queries, model_name, processed):
-    all_found = []
-    headers = {"User-Agent": "Mozilla/5.0"}
+    category_links = []
+    candidates_to_analyze = []
+    # Імітуємо реальний браузер
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
     
     for q in search_queries:
-        for loc in LOCATIONS:
-            # ТИМЧАСОВО: Шукаємо за 30 днів
-            url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=30"
-            try:
-                r = requests.get(url, headers=headers, timeout=20)
-                soup = BeautifulSoup(r.text, 'html.parser')
-                cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
-                for card in cards[:50]:
-                    link_tag = card.find('a', href=True)
-                    if link_tag:
-                        link = "https://www.work.ua" + link_tag['href'].split('?')[0]
-                        if link not in processed:
-                            full_info = card.get_text(" ", strip=True)
-                            all_found.append(f"ДАНІ: {full_info}\nПосилання: {link}")
-                            processed.add(link)
-                time.sleep(1)
-            except: continue
+        url = f"https://www.work.ua/resumes-ukraine-{urllib.parse.quote(q)}/?days=30"
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+            if r.status_code != 200:
+                print(f"Помилка доступу до Work.ua: {r.status_code}")
+                continue
             
-    if all_found:
-        print(f"Знайдено {len(all_found)} резюме у категорії {category_name}. Аналізую...")
-        for i in range(0, len(all_found), 5):
-            batch = "\n---\n".join(all_found[i:i+5])
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Work.ua часто змінює класи, шукаємо по декількох ознаках
+            cards = soup.find_all('div', class_=['card', 'card-hover', 'resume-link'])
+            if not cards:
+                # Спробуємо знайти по іншому селектору
+                cards = soup.select('div.card.card-resumes')
+
+            for card in cards[:30]:
+                link_tag = card.find('a', href=True)
+                if link_tag and '/resumes/' in link_tag['href']:
+                    link = "https://www.work.ua" + link_tag['href'].split('?')[0]
+                    if link not in processed:
+                        info = card.get_text(" ", strip=True)
+                        candidates_to_analyze.append(f"ДАНІ: {info}\nПосилання: {link}")
+                        category_links.append(link)
+            time.sleep(2) # Пауза між запитами до сайту
+        except Exception as e:
+            print(f"Помилка на запиті {q}: {e}")
+    
+    if candidates_to_analyze:
+        print(f"Знайдено {len(candidates_to_analyze)} нових для {category_name}. Аналізую...")
+        for i in range(0, len(candidates_to_analyze), 5):
+            batch = "\n---\n".join(candidates_to_analyze[i:i+5])
             report = get_ai_analysis(batch, model_name)
             if report:
-                send_telegram(f"🔍 **МАШТАБНИЙ ПОШУК (30 днів): {category_name}**\n\n{report}")
+                send_telegram(f"🔍 **ГЛОБАЛЬНО (30 днів): {category_name}**\n\n{report}")
             time.sleep(25)
-        return [f.split("Посилання: ")[1] for f in all_found]
-    return []
+    return category_links
 
 if __name__ == "__main__":
     api_key = os.getenv("GEMINI_API_KEY")
     active_model = get_active_model(api_key)
     processed = get_processed_links()
-    total_new_links = []
-
-    print(f"Запуск масштабного пошуку (30 днів). Модель: {active_model}")
+    all_new = []
 
     for cat_name, queries in QUERIES.items():
-        new_links = process_category(cat_name, queries, active_model, processed)
-        total_new_links.extend(new_links)
+        print(f"Пошук {cat_name}...")
+        res = process_category(cat_name, queries, active_model, processed)
+        all_new.extend(res)
+        processed.update(res)
 
-    if total_new_links:
-        save_processed_links(total_new_links)
-        print(f"Оброблено: {len(total_new_links)}")
+    if all_new:
+        save_processed_links(all_new)
+        print(f"Завершено. Оброблено: {len(all_new)}")
     else:
-        print("Нікого не знайдено навіть за місяць.")
+        print("Нікого не знайдено. Можливо, сайт тимчасово обмежив доступ.")
