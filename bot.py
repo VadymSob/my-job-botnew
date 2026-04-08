@@ -8,22 +8,29 @@ import time
 QUERIES = {
     "💼 КОМЕРЦІЙНИЙ ДИРЕКТОР": ["комерційний директор", "commercial director"],
     "🏗️ НАЧАЛЬНИК ВИРОБНИЦТВА": ["начальник виробництва хліб", "керівник хлібопекарського виробництва"],
-    "🧪 ТЕХНОЛОГ": ["технолог хлібобулочних", "головний технолог хліб"]
+    "🧪 ТЕХНОЛОГ": ["технолог хлібобулочних", "головний технолог хліб"],
+    "🚚 ЛОГІСТ (Транспорт)": ["логіст транспортний", "диспетчер логіст", "менеджер з логістики"]
 }
 LOCATIONS = ["ukraine"]
 DB_FILE = "processed_resumes.txt"
 
-# --- 2. СУВОРИЙ ФІЛЬТР ---
+# --- 2. РОЗШИРЕНИЙ ФІЛЬТР ДЛЯ ВСІХ ВАКАНСІЙ ---
 AI_CRITERIA = """
-Ти - рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію.
-Шукаємо фахівців для ХЛІБОПЕКАРСЬКОЇ або ХАРЧОВОЇ галузі.
+Ти - рекрутер хлібозаводу у Вінниці. Проаналізуй досвід та локацію кандидата.
 
-КРИТЕРІЇ ВІДБОРУ:
-1. ⭐ СУПЕР ПРІОРИТЕТ: Досвід у хлібі/випічці + локація Вінниця АБО готовий до переїзду.
-2. ✅ ПРІОРИТЕТ: Харчове виробництво (м'ясо, молоко, кондитерка) + готовність до переїзду.
-3. ❌ ВІДМОВА: Немає харчового досвіду АБО не готовий до переїзду у Вінницю.
+Вимоги за категоріями:
+1. КОМЕРЦІЙНИЙ/ВИРОБНИЦТВО/ТЕХНОЛОГ: Пріоритет - харчова сфера (хліб, м'ясо, молоко).
+2. ЛОГІСТ: 
+   - Шукаємо фахівця з транспортної логістики.
+   - Ключові навички: формування маршрутів (Вінниця та область), контроль GPS, власний автопарк.
+   - Досвід з FMCG (товари швидкого вжитку) або харчовими продуктами буде великим плюсом.
 
-Формат: [Результат] - [Посада] - [Місто/Переїзд] - [Компанія] - [Посилання]
+КЛАСИФІКАЦІЯ:
+⭐ СУПЕР ПРІОРИТЕТ: Відповідний досвід + Вінниця (або готовність до переїзду).
+✅ ПРІОРИТЕТ: Гарний досвід в інших сферах (наприклад, доставка води/пошти) + готовність до переїзду.
+❌ ВІДМОВА: Немає досвіду маршрутизації (тільки ЗЕД або складська логістика), немає готовності до Вінниці.
+
+Формат відповіді: [Результат] - [Вакансія] - [Місто/Переїзд] - [Досвід/Навички] - [Посилання]
 """
 
 def get_processed_links():
@@ -65,16 +72,17 @@ def send_telegram(message):
 
 def process_category(category_name, search_queries, model_name, processed):
     all_found = []
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
     for q in search_queries:
         for loc in LOCATIONS:
-            # ПОВЕРТАЄМО 7 ДНІВ
+            # Для логістів шукаємо за останні 7 днів
             url = f"https://www.work.ua/resumes-{loc}-{urllib.parse.quote(q)}/?days=7"
             try:
                 r = requests.get(url, headers=headers, timeout=20)
                 soup = BeautifulSoup(r.text, 'html.parser')
                 cards = soup.find_all('div', class_=['card-resumes', 'card-hover', 'resume-link'])
-                for card in cards[:20]:
+                for card in cards[:15]:
                     link_tag = card.find('a', href=True)
                     if link_tag:
                         link = "https://www.work.ua" + link_tag['href'].split('?')[0]
@@ -84,12 +92,13 @@ def process_category(category_name, search_queries, model_name, processed):
                             processed.add(link)
                 time.sleep(1)
             except: continue
+            
     if all_found:
         for i in range(0, len(all_found), 5):
             batch = "\n---\n".join(all_found[i:i+5])
             report = get_ai_analysis(batch, model_name)
             if report:
-                send_telegram(f"🌍 **{category_name} (Україна/Переїзд):**\n\n{report}")
+                send_telegram(f"🚛 **{category_name}:**\n\n{report}")
             time.sleep(25)
         return [f.split("Посилання: ")[1] for f in all_found]
     return []
@@ -99,9 +108,16 @@ if __name__ == "__main__":
     active_model = get_active_model(api_key)
     processed = get_processed_links()
     total_new_links = []
+
+    print(f"Запуск моніторингу (включаючи ЛОГІСТІВ). Модель: {active_model}")
+
     for cat_name, queries in QUERIES.items():
+        print(f"Шукаю: {cat_name}...")
         new_links = process_category(cat_name, queries, active_model, processed)
         total_new_links.extend(new_links)
+
     if total_new_links:
         save_processed_links(total_new_links)
-    print("Готово. Бот у режимі очікування нових резюме.")
+        print(f"Готово. Знайдено та оброблено: {len(total_new_links)}")
+    else:
+        print("Нових релевантних резюме поки немає.")
